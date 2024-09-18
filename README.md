@@ -11,15 +11,9 @@ We provide the implementation of a novel algorithm, under the folder OptimalMis.
 ## Full install (tested on Dynamite)
 
 ```
-pip install tensorflow[with-cuda]
-pip pip install path.py mako box2d-py --no-cache-dir
+pip install tensorflow[with-cuda] path.py mako box2d-py garage --no-cache-dir
 ```
 
-To test PO2PE on garage environments, you also need to install rllab:
-
-```
-pip install garage --no-cache-dir
-```
 
 To test on MuJoCo environments, you need a MuJoCo license. Instructions on setting up MujoCo can be found [here](https://github.com/openai/mujoco-py).
 
