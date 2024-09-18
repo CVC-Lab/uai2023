@@ -1,4 +1,4 @@
-# Minimum-Variance Policy Evaluation for Policy Improvement (UAI 2023) (Ported to latest tensorflow) (Moved from rllib to garage)
+# Minimum-Variance Policy Evaluation for Policy Improvement (UAI 2023) (Ported to latest tensorflow) (Moved from rllib to ray-rllib)
 
 **NOT TO BE DISTRIBUTED**
 
