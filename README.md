@@ -8,9 +8,11 @@ This repository contains the implementation of the MBPExPI algorithm, based on O
 
 We provide the implementation of a novel algorithm, under the folder OptimalMis.
 
-## Full install (tested on Ubuntu 16.04)
+## Full install (tested on Dynamite)
 
-First of all, you need python3 (>=3.7) and tensorflow version 1.13.1 (different versions may generate compatibility issues).
+```
+pip install tensorflow[with-cuda]
+```
 
 To test PO2PE on rllab environments, you also need to install rllab:
 
