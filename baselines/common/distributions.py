@@ -173,23 +173,24 @@ class CategoricalPd(Pd):
             logits=self.logits,
             labels=one_hot_actions)
     def kl(self, other):
-        a0 = self.logits - tf.reduce_max(self.logits, axis=-1, keep_dims=True)
-        a1 = other.logits - tf.reduce_max(other.logits, axis=-1, keep_dims=True)
+        a0 = self.logits - tf.reduce_max(self.logits, axis=-1, keepdims=True)
+        a1 = other.logits - tf.reduce_max(other.logits, axis=-1, keepdims=True)
         ea0 = tf.exp(a0)
         ea1 = tf.exp(a1)
-        z0 = tf.reduce_sum(ea0, axis=-1, keep_dims=True)
-        z1 = tf.reduce_sum(ea1, axis=-1, keep_dims=True)
+        z0 = tf.reduce_sum(ea0, axis=-1, keepdims=True)
+        z1 = tf.reduce_sum(ea1, axis=-1, keepdims=True)
         p0 = ea0 / z0
-        return tf.reduce_sum(p0 * (a0 - tf.log(z0) - a1 + tf.log(z1)), axis=-1)
+        return tf.reduce_sum(p0 * (a0 - tf.math.log(z0) - a1 + tf.math.log(z1)), axis=-1)
     def entropy(self):
-        a0 = self.logits - tf.reduce_max(self.logits, axis=-1, keep_dims=True)
+        a0 = self.logits - tf.reduce_max(self.logits, axis=-1, keepdims=True)
         ea0 = tf.exp(a0)
-        z0 = tf.reduce_sum(ea0, axis=-1, keep_dims=True)
+        z0 = tf.reduce_sum(ea0, axis=-1, keepdims=True)
         p0 = ea0 / z0
-        return tf.reduce_sum(p0 * (tf.log(z0) - a0), axis=-1)
+        return tf.reduce_sum(p0 * (tf.math.log(z0) - a0), axis=-1)
     def sample(self):
-        u = tf.random_uniform(tf.shape(self.logits))
-        return tf.argmax(self.logits - tf.log(-tf.log(u)), axis=-1)
+        # Start of Selection
+        u = tf.random.uniform(tf.shape(self.logits))
+        return tf.argmax(self.logits - tf.math.log(-tf.math.log(u)), axis=-1)
 
     def renyi(self, other, alpha=2.):
         assert isinstance(other, CategoricalPd)
@@ -197,7 +198,7 @@ class CategoricalPd(Pd):
         ea1 = tf.exp(other.logits)
         softmax0 = ea0 / tf.reduce_sum(ea0, axis=-1, keepdims=True)
         softmax1 = ea1 / tf.reduce_sum(ea1, axis=-1, keepdims=True)
-        return (1 / (alpha-1)) * tf.log(tf.reduce_sum(tf.pow(softmax0, alpha) * tf.pow(softmax1, 1-alpha), axis=-1))
+        return (1 / (alpha-1)) * tf.math.log(tf.reduce_sum(tf.pow(softmax0, alpha) * tf.pow(softmax1, 1-alpha), axis=-1))
 
     @classmethod
     def fromflat(cls, flat):
@@ -259,9 +260,9 @@ class DiagGaussianPd(Pd):
         var_alpha = alpha * tf.square(other.std) + (1. - alpha) * tf.square(self.std)
 
         return alpha/2. * tf.reduce_sum(tf.square(self.mean - other.mean) / (var_alpha + tol), axis=-1) - \
-               1./(2*(alpha - 1)) * (tf.log(tf.reduce_prod(var_alpha, axis=-1) + tol) -
-                   tf.log(tf.reduce_prod(tf.square(self.std), axis=-1) + tol) * (1-alpha)
-                                - tf.log(tf.reduce_prod(tf.square(other.std), axis=-1) + tol) * alpha)
+               1./(2*(alpha - 1)) * (tf.math.log(tf.reduce_prod(var_alpha, axis=-1) + tol) -
+                   tf.math.log(tf.reduce_prod(tf.square(self.std), axis=-1) + tol) * (1-alpha)
+                                - tf.math.log(tf.reduce_prod(tf.square(other.std), axis=-1) + tol) * alpha)
 
     def compute_divergence(self, phi, nu):
         assert isinstance(phi, DiagGaussianPd)
@@ -326,7 +327,7 @@ class GaussianVectorPd(Pd):
         var_alpha = alpha * tf.square(other.std) + (1. - alpha) * tf.square(self.std)
         return alpha/2. * tf.square(self.mean - other.mean) / (var_alpha + tol) + \
             other.logstd - self.logstd + \
-            0.5/(alpha - 1)*(2*other.logstd - tf.log(var_alpha + tol))
+            0.5/(alpha - 1)*(2*other.logstd - tf.math.log(var_alpha + tol))
     @classmethod
     def fromflat(cls, flat):
         return cls(flat)
@@ -371,9 +372,9 @@ class MultiGaussianVectorPd(Pd):
         for selfmean, selflogstd, othermean, otherlogstd in zip(self.means, self.logstds, other.means, other.logstds):
             var_alpha = alpha * tf.exp(2*otherlogstd) + (1. - alpha) * tf.exp(2*selflogstd)
             renyis.append(alpha/2. * tf.reduce_sum(tf.square(selfmean - othermean) / (var_alpha + tol), axis=-1) - \
-                   1./(2*(alpha - 1)) * (tf.log(tf.reduce_prod(var_alpha, axis=-1) + tol) -
-                       tf.log(tf.reduce_prod(tf.exp(2*selflogstd), axis=-1) + tol) * (1-alpha)
-                                    - tf.log(tf.reduce_prod(tf.exp(otherlogstd), axis=-1) + tol) * alpha))
+                   1./(2*(alpha - 1)) * (tf.math.log(tf.reduce_prod(var_alpha, axis=-1) + tol) -
+                       tf.math.log(tf.reduce_prod(tf.exp(2*selflogstd), axis=-1) + tol) * (1-alpha)
+                                    - tf.math.log(tf.reduce_prod(tf.exp(otherlogstd), axis=-1) + tol) * alpha))
         return tf.stack(renyis, axis=0)
 
 #Single distribution: use for higher order policy or on single state
@@ -408,9 +409,9 @@ class CholeskyGaussianPd(Pd):
             tf.eye(self.size) * tf.exp(self.std)
         self.cov = tf.matmul(self.std, self.std, transpose_b=True)
         #Distribution properties
-        self.log_det_cov = 2*tf.reduce_sum(tf.log(tf.matrix_diag_part(self.std)))
+        self.log_det_cov = 2*tf.reduce_sum(tf.math.log(tf.matrix_diag_part(self.std)))
         self._entropy = 0.5*(self.size +
-                             self.size*tf.log(tf.constant(2*np.pi)) +
+                             self.size*tf.math.log(tf.constant(2*np.pi)) +
                              self.log_det_cov)
 
     def flatparam(self):
@@ -424,7 +425,7 @@ class CholeskyGaussianPd(Pd):
                                                     delta, lower=False)
         quadratic = tf.matmul(half_quadratic, half_quadratic, transpose_a=True)
 
-        return 0.5 * (self.log_det_cov + quadratic + self.size*tf.log(2*tf.constant(np.pi)))
+        return 0.5 * (self.log_det_cov + quadratic + self.size*tf.math.log(2*tf.constant(np.pi)))
     def kl(self, other):
         assert isinstance(other, CholeskyGaussianPd)
         assert self.size==other.size
@@ -455,7 +456,7 @@ class CholeskyGaussianPd(Pd):
         mix_std = tf.cholesky(mix_cov)
         half_quadratic = tf.matrix_triangular_solve(mix_std, delta, lower=True)
         quadratic = tf.matmul(half_quadratic, half_quadratic, transpose_a=True)
-        log_det_mix = 2*tf.reduce_sum(tf.log(tf.matrix_diag_part(mix_std)))
+        log_det_mix = 2*tf.reduce_sum(tf.math.log(tf.matrix_diag_part(mix_std)))
         return 0.5*alpha*quadratic - 1./(2*(alpha-1))*(log_det_mix -
                                       (1-alpha)*self.log_det_cov -
                                       alpha*other.log_det_cov)
@@ -488,7 +489,7 @@ class BernoulliPd(Pd):
         return cls(flat)
 
 def make_pdtype(ac_space):
-    from gym import spaces
+    from gymnasium import spaces
     if isinstance(ac_space, spaces.Box):
         assert len(ac_space.shape) == 1
         return DiagGaussianPdType(ac_space.shape[0])

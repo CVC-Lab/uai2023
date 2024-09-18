@@ -16,7 +16,7 @@ import tensorflow as tf
 from baselines.common import set_global_seeds
 from baselines import logger
 import baselines.common.tf_util as U
-from baselines.common.rllab_utils import Rllab2GymWrapper, rllab_env_from_name
+from baselines.common.rllab_utils import Rllib2GymWrapper#, ray_rllib_env_from_name
 from baselines.common.atari_wrappers import make_atari, wrap_deepmind
 from baselines.common.parallel_sampler import ParallelSampler
 from baselines.common.cmd_util import get_env_type
@@ -25,16 +25,20 @@ from baselines.policy.mlp_policy import MlpPolicy
 from baselines.policy.cnn_policy import CnnPolicy
 from baselines.pois import pois
 
+tf.config.threading.set_inter_op_parallelism_threads(1)
+tf.config.threading.set_intra_op_parallelism_threads(1)
+
+
 def train(env, policy, policy_init, n_episodes, horizon, seed, njobs=1, save_weights=0, learnable_variance=True, variance_init=1, **alg_args):
 
     if env.startswith('rllab.'):
         # Get env name and class
         env_name = re.match('rllab.(\S+)', env).group(1)
-        env_rllab_class = rllab_env_from_name(env_name)
+        # env_rllab_class = ray_rllib_env_from_name(env_name)
         # Define env maker
         def make_env():
-            env_rllab = env_rllab_class()
-            _env = Rllab2GymWrapper(env_rllab)
+            # env_rllab = env_rllab_class()
+            _env = Rllib2GymWrapper(env_name)
             return _env
         # Used later
         env_type = 'rllab'
@@ -80,7 +84,6 @@ def train(env, policy, policy_init, n_episodes, horizon, seed, njobs=1, save_wei
             return MlpPolicy(name=name, ob_space=ob_space, ac_space=ac_space,
                              hid_size=hid_size, num_hid_layers=num_hid_layers, gaussian_fixed_var=True,
                              use_bias=use_bias, use_critic=False,
-                             hidden_W_init=policy_initializer, output_W_init=policy_initializer,
                              learnable_variance=learnable_variance, variance_initializer=variance_init)
     elif policy == 'cnn':
         def make_policy(name, ob_space, ac_space):
@@ -97,8 +100,8 @@ def train(env, policy, policy_init, n_episodes, horizon, seed, njobs=1, save_wei
         affinity = len(os.sched_getaffinity(0))
     except:
         affinity = njobs
-    sess = U.make_session(affinity)
-    sess.__enter__()
+    
+    
 
     set_global_seeds(seed)
 
@@ -122,7 +125,7 @@ def main():
     parser.add_argument('--natural', type=bool, default=False)
     parser.add_argument('--file_name', type=str, default='progress')
     parser.add_argument('--logdir', type=str, default='logs')
-    parser.add_argument('--bound', type=str, default='max-d2')
+    parser.add_argument('--bound', type=str, default='std-d2')
     parser.add_argument('--delta', type=float, default=0.99)
     parser.add_argument('--njobs', type=int, default=-1)
     parser.add_argument('--policy', type=str, default='nn')

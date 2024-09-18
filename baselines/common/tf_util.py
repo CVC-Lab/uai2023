@@ -1,5 +1,5 @@
 import numpy as np
-import tensorflow as tf  # pylint: ignore-module
+import tensorflow as tf
 import copy
 import os
 import functools
@@ -9,18 +9,16 @@ import multiprocessing
 def switch(condition, then_expression, else_expression):
     """Switches between two operations depending on a scalar value (int or bool).
     Note that both `then_expression` and `else_expression`
-    should be symbolic tensors of the *same shape*.
+    should be tensors of the *same shape*.
 
     # Arguments
         condition: scalar tensor.
         then_expression: TensorFlow operation.
         else_expression: TensorFlow operation.
     """
-    x_shape = copy.copy(then_expression.get_shape())
-    x = tf.cond(tf.cast(condition, 'bool'),
-                lambda: then_expression,
-                lambda: else_expression)
-    x.set_shape(x_shape)
+    condition = tf.cast(condition, tf.bool)
+    x = tf.cond(condition, lambda: then_expression, lambda: else_expression)
+    x.set_shape(then_expression.shape)
     return x
 
 # ================================================================
@@ -28,9 +26,7 @@ def switch(condition, then_expression, else_expression):
 # ================================================================
 
 def lrelu(x, leak=0.2):
-    f1 = 0.5 * (1 + leak)
-    f2 = 0.5 * (1 - leak)
-    return f1 * x + f2 * abs(x)
+    return tf.nn.leaky_relu(x, alpha=leak)
 
 # ================================================================
 # Mathematical utils
@@ -40,7 +36,7 @@ def huber_loss(x, delta=1.0):
     """Reference: https://en.wikipedia.org/wiki/Huber_loss"""
     return tf.where(
         tf.abs(x) < delta,
-        tf.square(x) * 0.5,
+        0.5 * tf.square(x),
         delta * (tf.abs(x) - 0.5 * delta)
     )
 
@@ -48,264 +44,176 @@ def huber_loss(x, delta=1.0):
 # Global session
 # ================================================================
 
-def make_session(num_cpu=None, make_default=False):
-    """Returns a session that will use <num_cpu> CPU's only"""
+# TensorFlow 2.x uses eager execution by default, so session management is typically unnecessary.
+# However, if you need to configure thread settings, you can use the following approach.
+
+def configure_threading(num_cpu=None):
+    """Configures threading for TensorFlow operations."""
     if num_cpu is None:
         num_cpu = int(os.getenv('RCALL_NUM_CPU', multiprocessing.cpu_count()))
-    tf_config = tf.ConfigProto(
-        inter_op_parallelism_threads=num_cpu,
-        intra_op_parallelism_threads=num_cpu,
-        )
-    tf_config.gpu_options.allow_growth = True
-    if make_default:
-        return tf.InteractiveSession(config=tf_config)
-    else:
-        return tf.Session(config=tf_config)
+    tf.config.threading.set_intra_op_parallelism_threads(num_cpu)
+    tf.config.threading.set_inter_op_parallelism_threads(num_cpu)
+    # Allow GPU memory growth if GPUs are available
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
 
-def single_threaded_session():
-    """Returns a session which will only use a single CPU"""
-    return make_session(num_cpu=1)
+def single_threaded():
+    """Configures TensorFlow to use a single thread."""
+    configure_threading(num_cpu=1)
 
 def in_session(f):
     @functools.wraps(f)
     def newfunc(*args, **kwargs):
-        with tf.Session():
-            f(*args, **kwargs)
+        configure_threading()
+        return f(*args, **kwargs)
     return newfunc
 
-ALREADY_INITIALIZED = set()
-
-def initialize():
-    """Initialize all the uninitialized variables in the global scope."""
-    new_variables = set(tf.global_variables()) - ALREADY_INITIALIZED
-    tf.get_default_session().run(tf.variables_initializer(new_variables))
-    ALREADY_INITIALIZED.update(new_variables)
+# Initialize is generally handled automatically in TensorFlow 2.x.
+# If you need to initialize variables manually, you can do so within a tf.function or class constructor.
 
 # ================================================================
 # Model components
 # ================================================================
 
 def normc_initializer(std=1.0):
-    def _initializer(shape, dtype=None, partition_info=None):  # pylint: disable=W0613
+    def _initializer(shape, dtype=None, **kwargs):
         out = np.random.randn(*shape).astype(np.float32)
         out *= std / np.sqrt(np.square(out).sum(axis=0, keepdims=True))
         return tf.constant(out)
     return _initializer
 
-def conv2d(x, num_filters, name, filter_size=(3, 3), stride=(1, 1), pad="SAME", dtype=tf.float32, collections=None,
-           summary_tag=None):
-    with tf.variable_scope(name):
-        stride_shape = [1, stride[0], stride[1], 1]
-        filter_shape = [filter_size[0], filter_size[1], int(x.get_shape()[3]), num_filters]
-
-        # there are "num input feature maps * filter height * filter width"
-        # inputs to each hidden unit
-        fan_in = intprod(filter_shape[:3])
-        # each unit in the lower layer receives a gradient from:
-        # "num output feature maps * filter height * filter width" /
-        #   pooling size
-        fan_out = intprod(filter_shape[:2]) * num_filters
-        # initialize weights with random weights
-        w_bound = np.sqrt(6. / (fan_in + fan_out))
-
-        w = tf.get_variable("W", filter_shape, dtype, tf.random_uniform_initializer(-w_bound, w_bound),
-                            collections=collections)
-        b = tf.get_variable("b", [1, 1, 1, num_filters], initializer=tf.zeros_initializer(),
-                            collections=collections)
-
-        if summary_tag is not None:
-            tf.summary.image(summary_tag,
-                             tf.transpose(tf.reshape(w, [filter_size[0], filter_size[1], -1, 1]),
-                                          [2, 0, 1, 3]),
-                             max_images=10)
-
-        return tf.nn.conv2d(x, w, stride_shape, pad) + b
+def conv2d(x, num_filters, name, filter_size=(3, 3), stride=(1, 1), padding="SAME", dtype=tf.float32, summary_tag=None):
+    initializer = normc_initializer()(shape=filter_size + [int(x.shape[-1]), num_filters], dtype=dtype)
+    conv = tf.keras.layers.Conv2D(
+        filters=num_filters,
+        kernel_size=filter_size,
+        strides=stride,
+        padding=padding,
+        dtype=dtype,
+        kernel_initializer=initializer,
+        bias_initializer='zeros',
+        name=name
+    )
+    z = conv(x)
+    if summary_tag is not None:
+        tf.summary.image(
+            summary_tag,
+            tf.transpose(tf.reshape(conv.kernel, [filter_size[0], filter_size[1], -1, 1]), [2, 0, 1, 3]),
+            max_outputs=10
+        )
+    return z
 
 # ================================================================
 # Theano-like Function
 # ================================================================
 
 def function(inputs, outputs, updates=None, givens=None):
-    """Just like Theano function. Take a bunch of tensorflow placeholders and expressions
-    computed based on those placeholders and produces f(inputs) -> outputs. Function f takes
-    values to be fed to the input's placeholders and produces the values of the expressions
-    in outputs.
-
-    Input values can be passed in the same order as inputs or can be provided as kwargs based
-    on placeholder name (passed to constructor or accessible via placeholder.op.name).
-
-    Example:
-        x = tf.placeholder(tf.int32, (), name="x")
-        y = tf.placeholder(tf.int32, (), name="y")
-        z = 3 * x + 2 * y
-        lin = function([x, y], z, givens={y: 0})
-
-        with single_threaded_session():
-            initialize()
-
-            assert lin(2) == 6
-            assert lin(x=3) == 9
-            assert lin(2, 2) == 10
-            assert lin(x=2, y=3) == 12
+    """Creates a TensorFlow function similar to Theano's function.
 
     Parameters
     ----------
-    inputs: [tf.placeholder, tf.constant, or object with make_feed_dict method]
-        list of input arguments
-    outputs: [tf.Variable] or tf.Variable
-        list of outputs or a single output to be returned from function. Returned
-        value will also have the same shape.
+    inputs: list of input tensors
+    outputs: list of output tensors or a single tensor
+    updates: list of update operations
+    givens: dictionary mapping tensors to replace
+
+    Returns
+    -------
+    A callable function that executes the computation graph.
     """
-    if isinstance(outputs, list):
-        return _Function(inputs, outputs, updates, givens=givens)
-    elif isinstance(outputs, (dict, collections.OrderedDict)):
-        f = _Function(inputs, outputs.values(), updates, givens=givens)
-        return lambda *args, **kwargs: type(outputs)(zip(outputs.keys(), f(*args, **kwargs)))
-    else:
-        f = _Function(inputs, [outputs], updates, givens=givens)
-        return lambda *args, **kwargs: f(*args, **kwargs)[0]
-
-
-class _Function(object):
-    def __init__(self, inputs, outputs, updates, givens):
-        for inpt in inputs:
-            if not hasattr(inpt, 'make_feed_dict') and not (type(inpt) is tf.Tensor and len(inpt.op.inputs) == 0):
-                assert False, "inputs should all be placeholders, constants, or have a make_feed_dict method"
-        self.inputs = inputs
-        updates = updates or []
-        self.update_group = tf.group(*updates)
-        self.outputs_update = list(outputs) + [self.update_group]
-        self.givens = {} if givens is None else givens
-
-    def _feed_input(self, feed_dict, inpt, value):
-        if hasattr(inpt, 'make_feed_dict'):
-            feed_dict.update(inpt.make_feed_dict(value))
-        else:
-            feed_dict[inpt] = value
-
-    def __call__(self, *args):
-        assert len(args) <= len(self.inputs), "Too many arguments provided"
+    if givens is None:
+        givens = {}
+    @tf.function
+    def wrapped_function(*args, **kwargs):
         feed_dict = {}
-        # Update the args
-        for inpt, value in zip(self.inputs, args):
-            self._feed_input(feed_dict, inpt, value)
-        # Update feed dict with givens.
-        for inpt in self.givens:
-            feed_dict[inpt] = feed_dict.get(inpt, self.givens[inpt])
-        results = tf.get_default_session().run(self.outputs_update, feed_dict=feed_dict)[:-1]
-        return results
+        for inp, arg in zip(inputs, args):
+            feed_dict[inp] = arg
+        for key, value in kwargs.items():
+            feed_dict[key] = value
+        return tf.compat.v1.get_default_graph().gradient_override_map(givens)(*args, **kwargs)
+    return wrapped_function
 
 # ================================================================
 # Flat vectors
 # ================================================================
 
 def var_shape(x):
-    out = x.get_shape().as_list()
-    assert all(isinstance(a, int) for a in out), \
-        "shape function assumes that shape is fully known"
-    return out
+    return x.shape.as_list()
 
 def numel(x):
-    return intprod(var_shape(x))
+    return int(np.prod(var_shape(x)))
 
 def intprod(x):
     return int(np.prod(x))
 
-def flatgrad(loss, var_list, clip_norm=None, grad_ys=None, aggregation_method=None, colocate_gradients_with_ops=False):
-    grads = tf.gradients(loss, var_list, grad_ys=grad_ys, aggregation_method=aggregation_method, colocate_gradients_with_ops=colocate_gradients_with_ops)
+def flatgrad(loss, var_list, clip_norm=None):
+    grads = tf.gradients(loss, var_list)
     if clip_norm is not None:
-        grads = [tf.clip_by_norm(grad, clip_norm=clip_norm) for grad in grads]
-    return tf.concat(axis=0, values=[
-        tf.reshape(grad if grad is not None else tf.zeros_like(v), [numel(v)])
-        for (v, grad) in zip(var_list, grads)
-    ])
+        grads, _ = tf.clip_by_global_norm(grads, clip_norm)
+    flat_g = tf.concat([tf.reshape(g, [-1]) for g in grads if g is not None], axis=0)
+    return flat_g
 
 def assignFromFlat(var_list, values):
     assigns = []
-    shapes = list(map(var_shape, var_list))
-
-    start = 0
-    assigns = []
-    for (shape, v) in zip(shapes, var_list):
+    shapes = [var_shape(v) for v in var_list]
+    starts = np.cumsum([0] + [intprod(s) for s in shapes])
+    for v, start, shape in zip(var_list, starts[:-1], shapes):
         size = intprod(shape)
         assigns.append(tf.assign(v, tf.reshape(values[start:start + size], shape)))
-        start += size
     return tf.group(*assigns)
 
-class SetFromFlat(object):
+class SetFromFlat(tf.Module):
     def __init__(self, var_list, dtype=tf.float32):
-        assigns = []
-        shapes = list(map(var_shape, var_list))
-        total_size = np.sum([intprod(shape) for shape in shapes])
-
-        self.theta = theta = tf.placeholder(dtype, [total_size])
+        super(SetFromFlat, self).__init__()
+        self.theta = tf.Variable(tf.zeros([sum(intprod(var_shape(v)) for v in var_list)], dtype=dtype))
+        self.assign_ops = []
         start = 0
-        assigns = []
-        for (shape, v) in zip(shapes, var_list):
-            size = intprod(shape)
-            assigns.append(tf.assign(v, tf.reshape(theta[start:start + size], shape)))
+        for v in var_list:
+            size = intprod(var_shape(v))
+            self.assign_ops.append(v.assign(tf.reshape(self.theta[start:start + size], var_shape(v))))
             start += size
-        self.op = tf.group(*assigns)
+        self.assign_group = tf.group(*self.assign_ops)
 
+    @tf.function
     def __call__(self, theta):
-        tf.get_default_session().run(self.op, feed_dict={self.theta: theta})
+        self.theta.assign(theta)
+        self.assign_group()
 
-class GetFlat(object):
+class GetFlat(tf.Module):
     def __init__(self, var_list):
-        self.op = tf.concat(axis=0, values=[tf.cast(tf.reshape(v, \
-                                                               [numel(v)]),tf.float32) for v in var_list])
+        super(GetFlat, self).__init__()
+        self.var_list = var_list
 
+    @tf.function
     def __call__(self):
-        return tf.get_default_session().run(self.op)
+        return tf.concat([tf.reshape(v, [-1]) for v in self.var_list], axis=0)
 
 _PLACEHOLDER_CACHE = {}  # name -> (placeholder, dtype, shape)
 
 def get_placeholder(name, dtype, shape):
     if name in _PLACEHOLDER_CACHE:
         out, dtype1, shape1 = _PLACEHOLDER_CACHE[name]
-        assert dtype1 == dtype and shape1 == shape
+        assert dtype1 == dtype and shape1 == shape, "Placeholder cache mismatch."
         return out
     else:
-        out = tf.placeholder(dtype=dtype, shape=shape, name=name)
-        _PLACEHOLDER_CACHE[name] = (out, dtype, shape)
-        return out
+        # In TF2.x, placeholders are replaced by function arguments or tf.function inputs
+        raise NotImplementedError("Placeholders are not used in TensorFlow 2.x")
 
 def get_placeholder_cached(name):
-    return _PLACEHOLDER_CACHE[name][0]
+    if name in _PLACEHOLDER_CACHE:
+        return _PLACEHOLDER_CACHE[name][0]
+    else:
+        raise KeyError(f"Placeholder '{name}' not found in cache.")
 
 def flattenallbut0(x):
-    return tf.reshape(x, [-1, intprod(x.get_shape().as_list()[1:])])
+    return tf.reshape(x, [tf.shape(x)[0], -1])
 
 def reduce_var(x, axis=None, keepdims=False):
-    """Variance of a tensor, alongside the specified axis.
-
-    # Arguments
-        x: A tensor or variable.
-        axis: An integer, the axis to compute the variance.
-        keepdims: A boolean, whether to keep the dimensions or not.
-            If `keepdims` is `False`, the rank of the tensor is reduced
-            by 1. If `keepdims` is `True`,
-            the reduced dimension is retained with length 1.
-
-    # Returns
-        A tensor with the variance of elements of `x`.
-    """
-    m = tf.reduce_mean(x, axis=axis, keepdims=True)
-    devs_squared = tf.square(x - m)
-    return tf.reduce_mean(devs_squared, axis=axis, keepdims=keepdims)
+    """Variance of a tensor along specified axis."""
+    return tf.math.reduce_variance(x, axis=axis, keepdims=keepdims)
 
 def reduce_std(x, axis=None, keepdims=False):
-    """Standard deviation of a tensor, alongside the specified axis.
-
-    # Arguments
-        x: A tensor or variable.
-        axis: An integer, the axis to compute the standard deviation.
-        keepdims: A boolean, whether to keep the dimensions or not.
-            If `keepdims` is `False`, the rank of the tensor is reduced
-            by 1. If `keepdims` is `True`,
-            the reduced dimension is retained with length 1.
-
-    # Returns
-        A tensor with the standard deviation of elements of `x`.
-    """
-    return tf.sqrt(reduce_var(x, axis=axis, keepdims=keepdims))
+    """Standard deviation of a tensor along specified axis."""
+    return tf.math.reduce_std(x, axis=axis, keepdims=keepdims)

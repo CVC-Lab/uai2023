@@ -11,11 +11,11 @@ We provide the implementation of a novel algorithm, under the folder OptimalMis.
 ## Full install (tested on Dynamite)
 
 ```
-pip install tensorflow[with-cuda] path.py mako box2d-py garage --no-cache-dir
+conda env create -f environment.yml
+pip install requirements.txt --no-cache-dir
+pip install -e .
 ```
 
-
-To test on MuJoCo environments, you need a MuJoCo license. Instructions on setting up MujoCo can be found [here](https://github.com/openai/mujoco-py).
 
 ## Usage
 

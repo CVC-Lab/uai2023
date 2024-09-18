@@ -1,85 +1,68 @@
 '''
-    Utils for utilize RLLAB
+    Utils to use OpenAI Gymnasium environments wherever possible, fallback to Ray RLlib when necessary
 '''
 
-import gym
+import gymnasium as gym
 from baselines.common import set_global_seeds as set_all_seeds
 import numpy as np
+import ray
+from ray import rllib
+from ray.tune.registry import register_env
+import difflib  # Added for string matching
 
-def rllab_env_from_name(env):
-    if env == 'swimmer':
-        from rllab.envs.mujoco.swimmer_env import SwimmerEnv
-        return SwimmerEnv
-    elif env == 'ant':
-        from rllab.envs.mujoco.ant_env import AntEnv
-        return AntEnv
-    elif env == 'half-cheetah':
-        from rllab.envs.mujoco.half_cheetah_env import HalfCheetahEnv
-        return HalfCheetahEnv
-    elif env == 'hopper':
-        from rllab.envs.mujoco.hopper_env import HopperEnv
-        return HopperEnv
-    elif env == 'simple-humanoid':
-        from rllab.envs.mujoco.simple_humanoid_env import SimpleHumanoidEnv
-        return SimpleHumanoidEnv
-    elif env == 'full-humanoid':
-        from rllab.envs.mujoco.humanoid_env import HumanoidEnv
-        return HumanoidEnv
-    elif env == 'walker':
-        from rllab.envs.mujoco.walker2d_env import Walker2DEnv
-        return Walker2DEnv
-    elif env == 'cartpole':
-        from rllab.envs.box2d.cartpole_env import CartpoleEnv
-        return CartpoleEnv
-    elif env == 'mountain-car':
-        from rllab.envs.box2d.mountain_car_env import MountainCarEnv
-        return MountainCarEnv
-    elif env == 'inverted-pendulum':
-        from rllab.envs.box2d.cartpole_swingup_env import CartpoleSwingupEnv as InvertedPendulumEnv
-        return InvertedPendulumEnv
-    elif env == 'acrobot':
-        from rllab.envs.box2d.double_pendulum_env import DoublePendulumEnv as AcrobotEnv
-        return AcrobotEnv
-    elif env == 'inverted-double-pendulum':
-        from rllab.envs.mujoco.inverted_double_pendulum_env import InvertedDoublePendulumEnv
-        return InvertedDoublePendulumEnv
-    else:
-        raise Exception('Unrecognized rllab environment:', env)
+def load_env(env_name):
+    available_envs = list(gym.envs.registry.keys())
+    closest_matches = difflib.get_close_matches(env_name, available_envs, n=1, cutoff=0.6)
+    if closest_matches:
+        closest_env = closest_matches[0]
+        try:
+            env = gym.make(closest_env)
+            print(f"Loaded '{closest_env}' instead.")
+            return env
+        except gym.error.Error:
+            print(f"Found closest match '{closest_env}' but failed to load it.")
+    print(f"{env_name} not found in OpenAI Gymnasium.")
+    raise Exception(f"Environment {env_name} not found in gym.")
 
-def convert_rllab_space(space):
-
-    import rllab
-    import gym.spaces
-
-    if isinstance(space, rllab.spaces.Box):
-        return gym.spaces.Box(low=space.low, high=space.high, dtype=np.float32)
-    elif isinstance(space, rllab.spaces.Discrete):
-        return gym.spaces.Discrete(n=space._n)
-    elif isinstance(space, rllab.spaces.Tuple):
-        return gym.spaces.Tuple([convert_rllab_space(x) for x in space._components])
-    else:
-        raise NotImplementedError
-
-class Rllab2GymWrapper(gym.Env):
-
-    def __init__(self, rllab_env):
-        import rllab
-        from rllab.envs.normalized_env import normalize
-        self.rllab_env = normalize(rllab_env)
-        self.observation_space = convert_rllab_space(rllab_env.observation_space)
-        self.action_space = convert_rllab_space(rllab_env.action_space)
+# Wrapper for Ray RLlib and Gymnasium environments
+class Rllib2GymWrapper(gym.Env):
+    def __init__(self, env_name):
+        self.env = load_env(env_name)
+        self.observation_space = self.env.observation_space
+        self.action_space = self.env.action_space
 
     def step(self, action):
-        res = self.rllab_env.step(action)
-        return tuple(res)
+        return self.env.step(action)
 
     def reset(self):
-        new_state = self.rllab_env.reset()
-        return new_state
+        return self.env.reset()
 
     def seed(self, seed=0):
         set_all_seeds(seed)
 
-    def render(self, mode='human', close=False):
-        #return self.rllab_env.render(mode=mode, close=close)
-        return self.rllab_env.render()
+    def render(self, mode='human'):
+        return self.env.render()
+
+# Example of how to use the environment loader and Ray RLlib for training
+if __name__ == "__main__":
+    ray.init(ignore_reinit_error=True)
+
+    # Registering a custom Gym environment with Ray RLlib
+    def env_creator(config):
+        return Rllib2GymWrapper('CartPole-v1')
+
+    # Register the environment with Ray
+    register_env("custom_cartpole", env_creator)
+
+    # Configuring the RL algorithm (PPO in this case)
+    config = rllib.algorithms.ppo.PPOConfig().environment(env="custom_cartpole")
+
+    # Build the agent/trainer
+    agent = config.build()
+
+    # Train for some iterations
+    for i in range(5):
+        result = agent.train()
+        print(f"Iteration {i}: reward = {result['episode_reward_mean']}")
+
+    ray.shutdown()

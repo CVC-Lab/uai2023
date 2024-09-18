@@ -1,0 +1,8 @@
+name: uai
+channels:
+  - defaults
+dependencies:
+  - python=3.8
+  - pytorch=1.7
+  - tensorflow[with-cuda]==2.12.0
+  - pip
