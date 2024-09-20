@@ -19,6 +19,7 @@ class MlpPolicy(tf.keras.Model):
         self.use_critic = use_critic
         self.gaussian_fixed_var = gaussian_fixed_var
         self.learnable_variance = learnable_variance
+        self.use_critic = use_critic
         # Set seed for reproducibility
         if seed is not None:
             tf.random.set_seed(seed)
@@ -55,7 +56,6 @@ class MlpPolicy(tf.keras.Model):
                 kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
                 name='v_pred'
             )
-
         # Actor network
         if gaussian_fixed_var and isinstance(ac_space, gym.spaces.Box):
             self.mean_layer = tf.keras.layers.Dense(
@@ -161,13 +161,8 @@ class MlpPolicy(tf.keras.Model):
         return ac.numpy()[0], vpred.numpy()[0]
 
     def get_trainable_variables(self):
-        """
-        Get all trainable variables of the policy and critic.
-
-        Returns:
-            List of trainable variables
-        """
-        return self.trainable_variables
+        return self.trainable_weights
+       
 
     def set_weights_flat(self, new_weights):
         """
@@ -262,3 +257,4 @@ class MlpPolicy(tf.keras.Model):
             param: Numpy array of flattened parameters
         """
         self.set_weights_flat(param)
+        

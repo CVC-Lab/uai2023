@@ -18,6 +18,9 @@ def timed(msg):
     tstart = time.time()
     yield
     print('done in %.3f seconds' % (time.time() - tstart))
+    
+def is_in_graph(var):
+    return hasattr(var, 'graph')
 
 def update_epsilon(delta_bound, epsilon_old, max_increase=2.):
     if delta_bound > (1. - 1. / (2 * max_increase)) * epsilon_old:
@@ -140,7 +143,7 @@ def optimize_offline(theta_init, set_parameter, line_search, evaluate_loss, eval
     fmtstr = '%6i %10.3g %10.3g %18i %18.3g %18.3g %18.3g'
     titlestr = '%6s %10s %10s %18s %18s %18s %18s'
     print(titlestr % ('iter', 'epsilon', 'step size', 'num line search', 'gradient norm', 'delta bound ite', 'delta bound tot'))
-
+    print("starting offline optimization")
     for i in range(max_offline_ite):
         bound = evaluate_loss()
         gradient = evaluate_grads()
@@ -164,7 +167,6 @@ def optimize_offline(theta_init, set_parameter, line_search, evaluate_loss, eval
             natural_gradient = gradient
 
         gradient_norm = np.sqrt(np.dot(gradient, natural_gradient))
-
         if gradient_norm < gradient_tol:
             print('stopping - gradient norm < gradient_tol')
             return theta, improvement
@@ -260,13 +262,13 @@ def learn(make_env, make_policy, *,
     def compute_loss_and_grad(ob, ac, rew, disc_rew, ep_return, ep_return_opt, mask, iter_number):
         with tf.GradientTape() as tape:
             # Compute log probabilities
-            pd, _ = pi(ob, training=True)
-            pd_old, _ = oldpi(ob, training=False)
-
+            oldpi.trainable = False
+            pi.trainable = True
+            pd, _ = pi(ob)
+            pd_old, _ = oldpi(ob)
             target_log_pdf = pd.logp(ac)
             behavioral_log_pdf = pd_old.logp(ac)
             log_ratio = target_log_pdf - behavioral_log_pdf
-
             # Reshape operations
             log_ratio_split = tf.reshape(log_ratio * mask, (n_episodes, horizon))
             return_abs_max = tf.reduce_max(tf.abs(ep_return))
@@ -298,6 +300,13 @@ def learn(make_env, make_policy, *,
             renyi_d2 = tf.reshape(renyi_d2, tf.shape(mask))
             emp_d2 = tf.reduce_mean(tf.exp(tf.reduce_sum(renyi_d2 * mask, axis=-1)))
             ess_renyi = tf.cast(n_episodes, tf.float32) / emp_d2
+            # TODO:check if ess_renyi is part of computational graph
+            # Check if ess_renyi is part of computational graph
+            # if not is_in_graph(pd):
+            #     print("pd is not part of computational graph")
+            # if not is_in_graph(ess_renyi):
+            #     print("ess_renyi is not part of computational graph")
+            
             # Compute the bound
             if bound == 'J':
                 bound_ = w_return_mean
@@ -337,9 +346,29 @@ def learn(make_env, make_policy, *,
 
             # Assuming the goal is to maximize the bound, we minimize the negative bound
             total_loss = -bound_
+
+            # Debug prints
+            # print("w_return_mean:", w_return_mean.numpy())
+            # print("bound_:", bound_.numpy())
+            # print("total_loss:", total_loss.numpy())
+
+            # Check if total_loss is constant
+            # if tf.reduce_all(tf.equal(total_loss, tf.constant(total_loss.numpy()))):
+            #     print("Warning: total_loss is constant!")
     
-        
         grads = tape.gradient(total_loss, var_list)
+
+        # Debug prints for gradients
+        # print("Gradients:")
+        # for var, grad in zip(var_list, grads):
+        #     print(f"{var.name}: {grad}")
+
+        # # Check if all gradients are zero
+        # if all(tf.reduce_all(tf.equal(g, 0)) for g in grads if g is not None):
+        #     print("Warning: All gradients are zero!")
+
+        # print("computed gradients")
+        # print(grads)
         # pdb.set_trace()
         # grads_size = sum([tf.size(g).numpy() for g in grads])
         # assert grads_size == n_parameters
@@ -370,15 +399,12 @@ def learn(make_env, make_policy, *,
             new_values = new_theta[idx:idx + var_size].reshape(var_shape)
             var.assign(new_values)
             idx += var_size
+        
 
     def get_policy_parameters(model):
         return tf.concat([tf.reshape(v, [-1]) for v in model.trainable_variables], axis=0).numpy()
 
-    # Sampler setup
-    # if sampler is None:
-    #     seg_gen = traj_segment_generator(pi, env, n_episodes, horizon, stochastic=True)
-    #     sampler = type("SequentialSampler", (object,), {"collect": lambda self, _: next(seg_gen)})()
-
+ 
     # Starting optimization
     episodes_so_far = 0
     timesteps_so_far = 0
@@ -471,7 +497,7 @@ def learn(make_env, make_policy, *,
 
         # Update the policy parameters
         set_policy_parameters(pi, theta_opt)
-        print(theta_opt)
+        
 
         with timed('summaries after'):
             losses, _ = compute_loss_and_grad(*args)
@@ -482,63 +508,11 @@ def learn(make_env, make_policy, *,
 
     env.close()
 
-# # Additional utility functions
-# def traj_segment_generator(policy, env, n_episodes, horizon, stochastic=True):
-#     """
-#     Generates trajectory segments by running the current policy in the environment.
-#     """
-#     while True:
-#         seg = {"ob": [], "ac": [], "rew": [], "mask": [], "ep_rets": [], "ep_lens": []}
-#         ep_rets = []
-#         ep_lens = []
-#         for _ in range(n_episodes):
-#             ob, _ = env.reset()
-#             done = False
-#             ep_ret = 0
-#             ep_len = 0
-#             while not done and ep_len < horizon:
-#                 ob = ob.astype(np.float32)
-#                 ob_input = tf.constant(ob[None, :], dtype=tf.float32)
-#                 _, ac_dist, _ = policy(ob_input)
-#                 ac = ac_dist.sample().numpy()[0] if stochastic else ac_dist.mode().numpy()[0]
-#                 seg["ob"].append(ob)
-#                 seg["ac"].append(ac)
-#                 ob, rew, done, _, _ = env.step(ac)
-#                 seg["rew"].append(rew)
-#                 ep_ret += rew
-#                 ep_len += 1
-#                 seg["mask"].append(1.0)
-#             ep_rets.append(ep_ret)
-#             ep_lens.append(ep_len)
-#             seg["mask"].extend([0.0] * (horizon - ep_len))
-#         seg["ep_rets"] = ep_rets
-#         seg["ep_lens"] = ep_lens
-#         seg["mask"] = np.array(seg["mask"], dtype=np.float32)
-#         seg["ob"] = np.array(seg["ob"], dtype=np.float32)
-#         seg["ac"] = np.array(seg["ac"], dtype=np.float32)
-#         seg["rew"] = np.array(seg["rew"], dtype=np.float32)
-#         yield seg
+        
+        
 
 def compute_fisher_vector_product(x, args):
     # Implement the computation of the Fisher vector product
     # This is a placeholder; actual implementation depends on the policy model
     pass
 
-def evaluate_policy(env, policy, n_episodes):
-    """
-    Evaluate the policy for a given number of episodes and return the rewards.
-    """
-    rewards = []
-    for _ in range(n_episodes):
-        ob, _ = env.reset()
-        done = False
-        episode_reward = 0
-        while not done:
-            ob = ob.astype(np.float32)
-            ob_input = tf.constant(ob[None, :], dtype=tf.float32)
-            _, ac_dist, _ = policy(ob_input)
-            ac = ac_dist.mode().numpy()[0]  # Use deterministic actions for evaluation
-            ob, rew, done, _, _ = env.step(ac)
-            episode_reward += rew
-        rewards.append(episode_reward)
-    return rewards

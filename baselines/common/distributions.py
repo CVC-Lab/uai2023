@@ -231,29 +231,45 @@ class DiagGaussianPd(Pd):
         self.mean = mean
         self.logstd = logstd
         self.std = tf.exp(logstd)
+        
+    @tf.function
     def flatparam(self):
         return self.flat
+    
+    @tf.function
     def mode(self):
         return self.mean
+    
+    @tf.function
     def neglogp(self, x):
         return 0.5 * tf.reduce_sum(tf.square((x - self.mean) / self.std), axis=-1) \
                + 0.5 * np.log(2.0 * np.pi) * tf.to_float(tf.shape(x)[-1]) \
                + tf.reduce_sum(self.logstd, axis=-1)
+    @tf.function
     def independent_logps(self, x):
         return - (0.5 * tf.square((x- self.mean) / self.std)
                   + 0.5 * np.log(2. * np.pi)
                   + self.logstd)
+        
+    @tf.function
     def kl(self, other):
         assert isinstance(other, DiagGaussianPd)
         return tf.reduce_sum(other.logstd - self.logstd + (tf.square(self.std) + tf.square(self.mean - other.mean)) / (2.0 * tf.square(other.std)) - 0.5, axis=-1)
+    
+    @tf.function
     def entropy(self):
         return tf.reduce_sum(self.logstd + .5 * np.log(2.0 * np.pi * np.e), axis=-1)
+    
+    @tf.function
     def sample(self):
         return self.mean + self.std * tf.random_normal(tf.shape(self.mean))
+    
+    @tf.function
     def sample_symmetric(self):
         noise = tf.random_normal(tf.shape(self.mean))
         return (self.mean + self.std * noise, self.mean - self.std * noise)
 
+    @tf.function
     def renyi(self, other, alpha=2.):
         tol = 1e-45
         assert isinstance(other, DiagGaussianPd)
@@ -264,6 +280,7 @@ class DiagGaussianPd(Pd):
                    tf.math.log(tf.reduce_prod(tf.square(self.std), axis=-1) + tol) * (1-alpha)
                                 - tf.math.log(tf.reduce_prod(tf.square(other.std), axis=-1) + tol) * alpha)
 
+    @tf.function
     def compute_divergence(self, phi, nu):
         assert isinstance(phi, DiagGaussianPd)
         assert isinstance(nu, DiagGaussianPd)
