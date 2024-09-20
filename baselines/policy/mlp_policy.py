@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-import gym
+import gymnasium as gym
 from baselines.common.distributions import make_pdtype
 from baselines.common.mpi_running_mean_std import RunningMeanStd
 import pdb
@@ -19,7 +19,6 @@ class MlpPolicy(tf.keras.Model):
         self.use_critic = use_critic
         self.gaussian_fixed_var = gaussian_fixed_var
         self.learnable_variance = learnable_variance
-
         # Set seed for reproducibility
         if seed is not None:
             tf.random.set_seed(seed)
@@ -65,32 +64,32 @@ class MlpPolicy(tf.keras.Model):
             kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
             name='mean'
         )
-
-        if gaussian_fixed_var and isinstance(ac_space, gym.spaces.Box):
-            if learnable_variance:
+        if learnable_variance:
                 # Log standard deviation as a trainable variable
                 self.logstd = tf.Variable(
                     initial_value=variance_initializer * np.ones(pdtype.param_shape()[0] // 2, dtype=np.float32),
                     trainable=True,
                     name="logstd"
                 )
-            else:
-                # Log standard deviation as a fixed variable
-                self.logstd = tf.constant(
-                    value=variance_initializer * np.ones(pdtype.param_shape()[0] // 2, dtype=np.float32),
-                    dtype=tf.float32,
-                    name="logstd"
-                )
         else:
-            # If not Gaussian or action space is not continuous, handle accordingly
-            self.logstd = None
-            self.pdparam_layer = tf.keras.layers.Dense(
-                units=pdtype.param_shape()[0],
-                activation=None,
-                use_bias=use_bias,
-                kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
-                name='pdparam'
+            # Log standard deviation as a fixed variable
+            self.logstd = tf.constant(
+                value=variance_initializer * np.ones(pdtype.param_shape()[0] // 2, dtype=np.float32),
+                dtype=tf.float32,
+                name="logstd"
             )
+        # if gaussian_fixed_var and isinstance(ac_space, gym.spaces.Box):
+            
+        # else:
+        #     # If not Gaussian or action space is not continuous, handle accordingly
+        #     self.logstd = None
+        self.pdparam_layer = tf.keras.layers.Dense(
+            units=pdtype.param_shape()[0],
+            activation=None,
+            use_bias=use_bias,
+            kernel_initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
+            name='pdparam'
+        )
 
     def call(self, ob, training=False):
         """
@@ -104,6 +103,7 @@ class MlpPolicy(tf.keras.Model):
             mean: Mean action tensor
             vpred: Value prediction tensor (if critic is used)
         """
+        
         # Normalize observations
         obz = (ob - self.ob_rms.mean) / (self.ob_rms.std + 1e-8)
         obz = tf.clip_by_value(obz, -5.0, 5.0)
@@ -124,19 +124,21 @@ class MlpPolicy(tf.keras.Model):
             pol_out = layer(pol_out)
 
         mean = self.mean_layer(pol_out)
-
-        if self.gaussian_fixed_var and isinstance(self.ac_space, gym.spaces.Box):
-            if self.learnable_variance:
+        
+        if self.learnable_variance:
                 # Expand logstd to match batch size
                 logstd = tf.expand_dims(self.logstd, 0)  # Shape: [1, action_dim]
                 logstd = tf.tile(logstd, [tf.shape(mean)[0], 1])  # Shape: [batch_size, action_dim]
-            else:
-                logstd = self.logstd  # Shape: [1, action_dim], broadcastable
-
-            pdparam = tf.concat([mean, logstd], axis=1)  # Shape: [batch_size, 2 * action_dim]
         else:
-            pdparam = self.pdparam_layer(pol_out)  # Shape: [batch_size, param_shape]
-
+            logstd = self.logstd  # Shape: [1, action_dim], broadcastable
+            logstd = tf.expand_dims(logstd, 0)
+            logstd = tf.tile(logstd, [mean.shape[0], 1])  # Shape: [batch_size, action_dim]
+        pdparam = tf.concat([mean, logstd], axis=1)
+        # if self.gaussian_fixed_var and isinstance(self.ac_space, gym.spaces.Box):
+        #       # Shape: [batch_size, 2 * action_dim]
+        # else:
+        pdparam = self.pdparam_layer(pol_out)  # Shape: [batch_size, param_shape]
+        
         pd = self.pdtype.pdfromflat(pdparam)
 
         return mean, pd, vpred
@@ -198,46 +200,36 @@ class MlpPolicy(tf.keras.Model):
         return np.concatenate([var.numpy().flatten() for var in self.trainable_variables])
 
     def eval_renyi(self, states, other, order=2):
-        """Exponentiated Renyi divergence exp(Renyi(self, other)) for each state
-
-        Params:
-            states: Batch of states
-            other: Another policy instance
-            order: Order α of the divergence
-
-        Returns:
-            Numpy array of exponentiated Renyi divergences
-        """
+        """Exponentiated Renyi divergence exp(Renyi(self, other)) for each state"""
         if order < 2:
             raise NotImplementedError('Only order>=2 is currently supported')
-
+        
         # Get probability distributions for both policies
-        _, self_pd, _ = self(states)
-        _, other_pd, _ = other(states)
-
-        # Check if the distribution has a renyi method
-        if hasattr(self_pd, 'renyi'):
-            # Use the renyi method defined in the probability distribution class
-            renyi = self_pd.renyi(other_pd, alpha=order)
-        else:
-            # Fallback to Gaussian distribution calculation
-            self_mean, self_logstd = self_pd.mean(), tf.math.log(self_pd.stddev())
-            other_mean, other_logstd = other_pd.mean(), tf.math.log(other_pd.stddev())
-
-            # Normalize standard deviations
-            to_check = order / tf.exp(self_logstd) + (1 - order) / tf.exp(other_logstd)
-            if not tf.reduce_all(to_check > 0):
-                raise ValueError('Conditions on standard deviations are not met')
-
-            detSigma = tf.exp(tf.reduce_sum(self_logstd, axis=-1))
-            detOtherSigma = tf.exp(tf.reduce_sum(other_logstd, axis=-1))
-            mixSigma = order * tf.exp(self_logstd) + (1 - order) * tf.exp(other_logstd)
-            detMixSigma = tf.reduce_prod(mixSigma, axis=-1)
-            mean_diff = (self_mean - other_mean) / mixSigma
-            renyi = (order / 2) * tf.reduce_sum(mean_diff ** 2, axis=-1) - \
-                    (1. / (2 * (order - 1))) * (tf.math.log(detMixSigma) - (1 - order) * tf.math.log(detSigma) - order * tf.math.log(detOtherSigma))
+        self_logstd = self.logstd
+        other_logstd = other.logstd
+        self_mean = self.mean_layer(states)
+        other_mean = other.mean_layer(states)
+        
+        # Normalize standard deviations
+        to_check = order / tf.exp(self_logstd) + (1 - order) / tf.exp(other_logstd)
+        
+        # Instead of raising an error, we'll use a mask to handle invalid values
+        valid_mask = tf.cast(to_check > 0, tf.float32)
+        
+        detSigma = tf.exp(tf.reduce_sum(self_logstd, axis=-1))
+        detOtherSigma = tf.exp(tf.reduce_sum(other_logstd, axis=-1))
+        mixSigma = order * tf.exp(self_logstd) + (1 - order) * tf.exp(other_logstd)
+        detMixSigma = tf.reduce_prod(mixSigma, axis=-1)
+        mean_diff = (self_mean - other_mean) / (mixSigma + 1e-8)  # Add small epsilon to avoid division by zero
+        
+        renyi = (order / 2) * tf.reduce_sum(mean_diff ** 2, axis=-1) - \
+                (1. / (2 * (order - 1))) * (tf.math.log(detMixSigma + 1e-8) - (1 - order) * tf.math.log(detSigma + 1e-8) - order * tf.math.log(detOtherSigma + 1e-8))
 
         e_renyi = tf.exp(renyi)
+        
+        # Apply the mask to set invalid values to a large number (e.g., 1e10)
+        e_renyi = e_renyi * valid_mask + (1 - valid_mask) * 1e10
+        
         return e_renyi
 
     def get_param(self):

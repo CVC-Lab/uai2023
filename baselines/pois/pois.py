@@ -130,7 +130,7 @@ def line_search_constant(theta_init, alpha, natural_gradient, set_parameter, eva
 
     return theta, epsilon, delta_bound, 1
 
-def optimize_offline(theta_init, set_parameter, line_search, evaluate_loss, evaluate_gradient,
+def optimize_offline(theta_init, set_parameter, line_search, evaluate_loss_and_grads,
                      evaluate_natural_gradient=None, gradient_tol=1e-4, bound_tol=1e-4,
                      max_offline_ite=100, constant_step_size=1):
     theta = theta_old = theta_init
@@ -142,8 +142,9 @@ def optimize_offline(theta_init, set_parameter, line_search, evaluate_loss, eval
     print(titlestr % ('iter', 'epsilon', 'step size', 'num line search', 'gradient norm', 'delta bound ite', 'delta bound tot'))
 
     for i in range(max_offline_ite):
-        bound = evaluate_loss()
-        gradient = evaluate_gradient()
+        bound, gradient = evaluate_loss_and_grads()
+        # bound = evaluate_loss()
+        # gradient = evaluate_gradient()
 
         if np.any(np.isnan(gradient)):
             warnings.warn('Got NaN gradient! Stopping!')
@@ -419,13 +420,14 @@ def learn(make_env, make_policy, *,
         # Update old policy
         oldpi.set_weights_flat(pi.get_weights_flat())
 
+        def evaluate_loss_and_grads():
+            losses, grads = compute_loss_and_grad(*args)
+            return losses['Bound'].numpy(), grads
+        
         def evaluate_loss():
             losses, _ = compute_loss_and_grad(*args)
             return losses['Bound'].numpy()
 
-        def evaluate_gradient():
-            _, grad = compute_loss_and_grad(*args)
-            return grad.numpy()
 
         if use_natural_gradient:
             # Implement natural gradient computation if required
@@ -461,8 +463,7 @@ def learn(make_env, make_policy, *,
                 theta_init=theta,
                 set_parameter=lambda new_theta: set_policy_parameters(pi, new_theta),
                 line_search=line_search,
-                evaluate_loss=evaluate_loss,
-                evaluate_gradient=evaluate_gradient,
+                evaluate_loss_and_grads=evaluate_loss_and_grads,
                 evaluate_natural_gradient=evaluate_natural_gradient,
                 max_offline_ite=max_offline_iters,
                 constant_step_size=constant_step_size
