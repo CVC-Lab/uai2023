@@ -8,7 +8,7 @@ import tensorflow as tf
 import random
 import gym
 from gym.wrappers.monitoring.video_recorder import VideoRecorder
-
+import pdb
 def set_global_seeds(seed):
     tf.random.set_seed(seed)
     np.random.seed(seed)
@@ -62,8 +62,7 @@ def traj_segment_function(pi, env, n_episodes, horizon, stochastic):
                 "ep_lens": ep_lens,
                 "mask": mask
             }
-        if isinstance(ob, tuple):
-            ob = ob[0]
+        
         obs[t] = ob
         vpreds[t] = vpred
         news[t] = new
@@ -84,10 +83,8 @@ def traj_segment_function(pi, env, n_episodes, horizon, stochastic):
 
             cur_ep_ret = 0
             cur_ep_len = 0
-            ob = env.reset()
-
+            ob, info = env.reset()
             next_t = (i + 1) * horizon
-
             mask[t+1:next_t] = 0.
             acs[t+1:next_t] = acs[t]
             obs[t+1:next_t] = obs[t]
@@ -162,6 +159,12 @@ class ParallelSampler(object):
         f = lambda pi, env: traj_segment_function(pi, env, n_episodes_per_process, horizon, stochastic)
         f_rem = lambda pi, env: traj_segment_function(pi, env, n_episodes_per_process + 1, horizon, stochastic)
         fun = [f] * (self.n_workers - remainder) + [f_rem] * remainder
+        
+        # env = make_env()
+        # pi = make_pi('pi%s' % os.getpid(), env.observation_space, env.action_space)
+        # samples = traj_segment_function(pi, env, n_episodes, horizon, stochastic)
+        # print(samples['ob'].shape)
+        # pdb.set_trace()
         self.workers = [
             Worker(
                 self.output_queue,

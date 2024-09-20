@@ -125,7 +125,7 @@ def main():
     parser.add_argument('--natural', type=bool, default=False)
     parser.add_argument('--file_name', type=str, default='progress')
     parser.add_argument('--logdir', type=str, default='logs')
-    parser.add_argument('--bound', type=str, default='std-d2')
+    parser.add_argument('--bound', type=str, default='max-d2')
     parser.add_argument('--delta', type=float, default=0.99)
     parser.add_argument('--njobs', type=int, default=-1)
     parser.add_argument('--policy', type=str, default='nn')
