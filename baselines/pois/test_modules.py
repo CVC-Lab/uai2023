@@ -7,6 +7,7 @@ from baselines.common.rllab_utils import Rllib2GymWrapper
 import gymnasium as gym
 import pytest
 import pdb
+np.set_printoptions(precision=16, suppress=False)
 tf.config.run_functions_eagerly(True)
 
 

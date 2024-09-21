@@ -370,11 +370,11 @@ class MultiGaussianVectorPd(Pd):
                in zip(self.means, self.logstds, xs)], axis=1)
     def kl(self, other):
         assert isinstance(other, MultiGaussianVectorPd)
-        return tf.stack([tf.reduce_sum(otherlogstd - selflogstd + (tf.exp(2*selflogstd) + tf.square(selfmean - othermean)) / (2.0 * tf.exp(2*otherlogstd)) - 0.5, axis=-1)
-                    for selfmean, selflogstd, othermean, otherlogstd in zip(self.means, self.logstds, other.means, other.logstds)],
+        return tf.stack([tf.reduce_sum(other.logstd - self.logstd + (tf.exp(2*self.logstd) + tf.square(self.mean - other.mean)) / (2.0 * tf.exp(2*other.logstd)) - 0.5, axis=-1)
+                    for self.mean, self.logstd, other.mean, other.logstd in zip(self.means, self.logstds, other.means, other.logstds)],
                     axis = 0)
     def entropy(self):
-        return tf.stack([tf.reduce_sum(selflogstd + .5 * np.log(2.0 * np.pi * np.e), axis=-1) for selflogstd in self.logstds],
+        return tf.stack([tf.reduce_sum(self.logstd + .5 * np.log(2.0 * np.pi * np.e), axis=-1) for self.logstd in self.logstds],
                           axis=0)
     def sample(self):
         return self.flat_mean + tf.exp(self.flat_logstd) * tf.random_normal(tf.shape(self.flat_mean))
@@ -386,12 +386,12 @@ class MultiGaussianVectorPd(Pd):
         tol = 1e-45
         assert isinstance(other, MultiGaussianVectorPd)
         renyis = []
-        for selfmean, selflogstd, othermean, otherlogstd in zip(self.means, self.logstds, other.means, other.logstds):
-            var_alpha = alpha * tf.exp(2*otherlogstd) + (1. - alpha) * tf.exp(2*selflogstd)
-            renyis.append(alpha/2. * tf.reduce_sum(tf.square(selfmean - othermean) / (var_alpha + tol), axis=-1) - \
+        for self.mean, self.logstd, other.mean, other.logstd in zip(self.means, self.logstds, other.means, other.logstds):
+            var_alpha = alpha * tf.exp(2*other.logstd) + (1. - alpha) * tf.exp(2*self.logstd)
+            renyis.append(alpha/2. * tf.reduce_sum(tf.square(self.mean - other.mean) / (var_alpha + tol), axis=-1) - \
                    1./(2*(alpha - 1)) * (tf.math.log(tf.reduce_prod(var_alpha, axis=-1) + tol) -
-                       tf.math.log(tf.reduce_prod(tf.exp(2*selflogstd), axis=-1) + tol) * (1-alpha)
-                                    - tf.math.log(tf.reduce_prod(tf.exp(otherlogstd), axis=-1) + tol) * alpha))
+                       tf.math.log(tf.reduce_prod(tf.exp(2*self.logstd), axis=-1) + tol) * (1-alpha)
+                                    - tf.math.log(tf.reduce_prod(tf.exp(2*other.logstd), axis=-1) + tol) * alpha))
         return tf.stack(renyis, axis=0)
 
 #Single distribution: use for higher order policy or on single state

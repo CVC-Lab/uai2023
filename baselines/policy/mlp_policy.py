@@ -132,7 +132,6 @@ class MlpPolicy(tf.keras.Model):
             pdparam = tf.concat([mean, logstd], axis=1)
         else:
             pdparam = self.pdparam_layer(pol_out)  # Shape: [batch_size, param_shape]
-        
         pd = self.pdtype.pdfromflat(pdparam)
 
         return pd, vpred
@@ -153,7 +152,7 @@ class MlpPolicy(tf.keras.Model):
             ob = ob[0]  # The first element is the observation array
         ob = ob.astype(np.float32)
         ob_tensor = tf.convert_to_tensor(ob[None, :])  # Shape: [1, obs_dim]
-        pd, vpred = self(ob_tensor, training=False)
+        pd, vpred = self(ob_tensor)
         if stochastic:
             ac = pd.sample()
         else:

@@ -8,7 +8,7 @@ from baselines import logger
 from baselines.common.cg import cg
 from baselines.pois.utils import add_disc_rew, cluster_rewards
 import pdb
-
+np.set_printoptions(precision=16, suppress=False)
 # Enable eager execution
 tf.config.run_functions_eagerly(True)
 
@@ -28,18 +28,29 @@ def update_epsilon(delta_bound, epsilon_old, max_increase=2.):
     else:
         return epsilon_old ** 2 / (2 * (epsilon_old - delta_bound))
 
-def line_search_parabola(theta_init, alpha, natural_gradient, set_parameter, evaluate_bound,
+def line_search_parabola(theta_init, alpha, natural_gradient, set_parameter, policy, evaluate_bound,
                          delta_bound_tol=1e-4, max_line_search_ite=30):
     epsilon = 1.
     epsilon_old = 0.
     delta_bound_old = -np.inf
     bound_init = evaluate_bound()
     theta_old = theta_init
-
+    # delta_bound_tol = 1e3
+    # print("before line search iter")
+    # print(theta_init)
+    # print("alpha: ", alpha)
+    # print("bound_init: ", bound_init)
     for i in range(max_line_search_ite):
         theta = theta_init + epsilon * alpha * natural_gradient
-        set_parameter(theta)
-
+        # print(policy.trainable_variables)
+        # print(epsilon * alpha * natural_gradient)
+        # print("natural_gradient: ", natural_gradient)
+        # print("theta_init: ", theta_init)
+        # print("additive term: ", epsilon * alpha * natural_gradient)
+        # print("updated theta: ", theta)
+        set_parameter(policy, theta)
+        # print("after line search iter %d" % i)
+        # print(policy.trainable_variables)
         bound = evaluate_bound()
 
         if np.isnan(bound):
@@ -47,7 +58,8 @@ def line_search_parabola(theta_init, alpha, natural_gradient, set_parameter, eva
             return theta_old, epsilon_old, delta_bound_old, i + 1
 
         delta_bound = bound - bound_init
-
+        # print("bound: ", bound)
+        # print("delta_bound: ", delta_bound)
         epsilon_old = epsilon
         epsilon = update_epsilon(delta_bound, epsilon_old)
         if delta_bound <= delta_bound_old + delta_bound_tol:
@@ -133,12 +145,12 @@ def line_search_constant(theta_init, alpha, natural_gradient, set_parameter, eva
 
     return theta, epsilon, delta_bound, 1
 
-def optimize_offline(theta_init, set_parameter, line_search, evaluate_loss, evaluate_grads,
+def optimize_offline(theta_init, set_parameter, policy, line_search, evaluate_loss, evaluate_grads,
                      evaluate_natural_gradient=None, gradient_tol=1e-4, bound_tol=1e-4,
                      max_offline_ite=100, constant_step_size=1):
     theta = theta_old = theta_init
     improvement = improvement_old = 0.
-    set_parameter(theta)
+    set_parameter(policy, theta)
 
     fmtstr = '%6i %10.3g %10.3g %18i %18.3g %18.3g %18.3g'
     titlestr = '%6s %10s %10s %18s %18s %18s %18s'
@@ -149,12 +161,12 @@ def optimize_offline(theta_init, set_parameter, line_search, evaluate_loss, eval
         gradient = evaluate_grads()
         if np.any(np.isnan(bound)):
             warnings.warn('Got NaN bound! Stopping!')
-            set_parameter(theta_old)
+            set_parameter(policy, theta_old)
             return theta_old, improvement
 
         if np.isnan(bound):
             warnings.warn('Got NaN bound! Stopping!')
-            set_parameter(theta_old)
+            set_parameter(policy, theta_old)
             return theta_old, improvement_old
 
         if evaluate_natural_gradient is not None:
@@ -170,16 +182,17 @@ def optimize_offline(theta_init, set_parameter, line_search, evaluate_loss, eval
         if gradient_norm < gradient_tol:
             print('stopping - gradient norm < gradient_tol')
             return theta, improvement
-
+        
         if constant_step_size != 1:
             alpha = constant_step_size
         else:
             alpha = 1. / gradient_norm ** 2
-
+        if alpha > 2: # limit the step size to avoid instability
+            alpha = 2
         theta_old = theta
         improvement_old = improvement
-        theta, epsilon, delta_bound, num_line_search = line_search(theta, alpha, natural_gradient, set_parameter, evaluate_loss)
-        set_parameter(theta)
+        theta, epsilon, delta_bound, num_line_search = line_search(theta, alpha, natural_gradient, set_parameter, policy, evaluate_loss)
+        set_parameter(policy, theta)
 
         improvement += delta_bound
         print(fmtstr % (i + 1, epsilon, alpha * epsilon, num_line_search, gradient_norm, delta_bound, improvement))
@@ -300,13 +313,8 @@ def learn(make_env, make_policy, *,
             renyi_d2 = tf.reshape(renyi_d2, tf.shape(mask))
             emp_d2 = tf.reduce_mean(tf.exp(tf.reduce_sum(renyi_d2 * mask, axis=-1)))
             ess_renyi = tf.cast(n_episodes, tf.float32) / emp_d2
-            # TODO:check if ess_renyi is part of computational graph
-            # Check if ess_renyi is part of computational graph
-            # if not is_in_graph(pd):
-            #     print("pd is not part of computational graph")
-            # if not is_in_graph(ess_renyi):
-            #     print("ess_renyi is not part of computational graph")
-            
+            ESS_RENYI_MIN = 1e-6  # Define a minimum threshold for ess_renyi to avoid numerical instability
+            ess_renyi = tf.maximum(ess_renyi, ESS_RENYI_MIN)
             # Compute the bound
             if bound == 'J':
                 bound_ = w_return_mean
@@ -314,10 +322,13 @@ def learn(make_env, make_policy, *,
                 return_std = tf.math.reduce_std(ep_return)
                 bound_ = w_return_mean - tf.sqrt((1 - delta) / (delta * ess_renyi)) * return_std
             elif bound == 'max-d2':
+                CLIP_BOUND = 10  # Define a reasonable upper limit for the square root term
+                scaling_term = tf.sqrt((1 - delta) / (delta * ess_renyi))
+                scaling_term = tf.clip_by_value(scaling_term, 0, CLIP_BOUND)
                 if shift_return:
-                    bound_ = w_return_mean - tf.sqrt((1 - delta) / (delta * ess_renyi)) * optimization_return_abs_max
+                    bound_ = w_return_mean - scaling_term * optimization_return_abs_max
                 else:
-                    bound_ = w_return_mean - tf.sqrt((1 - delta) / (delta * ess_renyi)) * return_abs_max
+                    bound_ = w_return_mean - scaling_term * return_abs_max
             else:
                 raise NotImplementedError("Only 'J', 'std-d2', and 'max-d2' bounds are implemented.")
 
@@ -346,32 +357,19 @@ def learn(make_env, make_policy, *,
 
             # Assuming the goal is to maximize the bound, we minimize the negative bound
             total_loss = -bound_
-
-            # Debug prints
-            # print("w_return_mean:", w_return_mean.numpy())
-            # print("bound_:", bound_.numpy())
-            # print("total_loss:", total_loss.numpy())
-
-            # Check if total_loss is constant
-            # if tf.reduce_all(tf.equal(total_loss, tf.constant(total_loss.numpy()))):
-            #     print("Warning: total_loss is constant!")
+            # if np.abs(bound_) > 1e3:
+            #     print("bound_: ", bound_)
+            #     print("total_loss: ", total_loss)
+            #     print("ess_renyi: ", ess_renyi)
+            #     print("return_abs_max: ", return_abs_max)
+            #     print("optimization_return_abs_max: ", optimization_return_abs_max)
+            #     print("w_return_mean: ", w_return_mean)
+            #     print("delta", delta)
+            #     print("scaling_term",  scaling_term)
+            #     # leads to instability
+            #     pdb.set_trace()
     
         grads = tape.gradient(total_loss, var_list)
-
-        # Debug prints for gradients
-        # print("Gradients:")
-        # for var, grad in zip(var_list, grads):
-        #     print(f"{var.name}: {grad}")
-
-        # # Check if all gradients are zero
-        # if all(tf.reduce_all(tf.equal(g, 0)) for g in grads if g is not None):
-        #     print("Warning: All gradients are zero!")
-
-        # print("computed gradients")
-        # print(grads)
-        # pdb.set_trace()
-        # grads_size = sum([tf.size(g).numpy() for g in grads])
-        # assert grads_size == n_parameters
         # print size of grads
         flat_grad = tf.concat([tf.reshape(g, [-1]) for g in grads if g is not None], axis=0)
 
@@ -402,9 +400,15 @@ def learn(make_env, make_policy, *,
         
 
     def get_policy_parameters(model):
-        return tf.concat([tf.reshape(v, [-1]) for v in model.trainable_variables], axis=0).numpy()
-
- 
+        trainable_variables = model.trainable_variables
+        if not trainable_variables:
+            raise ValueError("The model has no trainable variables.")
+        
+        flattened_variables = [tf.reshape(v, [-1]) for v in trainable_variables]
+        if not flattened_variables:
+            raise ValueError("No variables to concatenate after flattening.")
+    
+        return tf.concat(flattened_variables, axis=0).numpy()
     # Starting optimization
     episodes_so_far = 0
     timesteps_so_far = 0
@@ -424,6 +428,8 @@ def learn(make_env, make_policy, *,
         logger.log('********** Iteration %i ************' % iters_so_far)
 
         theta = get_policy_parameters(pi)
+        # print("before sampling")
+        # print(theta)
 
         with timed('sampling'):
             seg = sampler.collect(theta)
@@ -486,7 +492,8 @@ def learn(make_env, make_policy, *,
         with timed("offline optimization"):
             theta_opt, improvement = optimize_offline(
                 theta_init=theta,
-                set_parameter=lambda new_theta: set_policy_parameters(pi, new_theta),
+                set_parameter=set_policy_parameters,
+                policy=pi,
                 line_search=line_search,
                 evaluate_loss=evaluate_loss,
                 evaluate_grads=evaluate_grads,
@@ -494,10 +501,11 @@ def learn(make_env, make_policy, *,
                 max_offline_ite=max_offline_iters,
                 constant_step_size=constant_step_size
             )
-
-        # Update the policy parameters
+        # pdb.set_trace()
+        # print("after offline optimization")
+        # print(theta_opt)
         set_policy_parameters(pi, theta_opt)
-        
+        # print(get_policy_parameters(pi))
 
         with timed('summaries after'):
             losses, _ = compute_loss_and_grad(*args)
